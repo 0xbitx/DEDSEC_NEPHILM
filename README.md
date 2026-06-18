@@ -4,99 +4,78 @@
 </p>
 
 <h1 align="center">NEPHILM</h1>
-<h4 align="center">Kernel-level rootkit for modern Linux (4.17–6.x) — ftrace-based syscall hooking, machine-specific artifact naming, DNS-over-HTTPS C2, randomized beaconing with jitter, and fully static zero-dependency dropper.
-</h4>
+<h4 align="center">Kernel-level rootkit for modern Linux — ftrace-based syscall hooking, DNS-based C2 over DoH (DNS-over-HTTPS), one-way shell, machine-specific artifact naming, randomized beaconing with jitter, and fully static deployment.</h4>
 
 ---
 
 ## DESCRIPTION
 
-NEPHILM is a kernel-level rootkit for modern Linux (4.17–6.x) that operates through ftrace-based syscall hooking. Unlike userland rootkits that can be detected by file integrity monitoring or process enumeration, NEPHILM embeds itself into the kernel's execution path — intercepting filesystem operations, process listings, and module enumeration before they reach userspace tools.
+NEPHILM is a kernel-level rootkit for modern Linux that operates through ftrace-based syscall hooking. Unlike userland rootkits detectable by file integrity monitoring or process enumeration, NEPHILM embeds itself into the kernel's execution path — intercepting filesystem operations, process listings, and module enumeration before they reach userspace tools.
 
-The rootkit binary masquerades as a legitimate system component (`systemd-coredump-*`), blending into the noise of hundreds of similar processes on a typical Linux box. Once executed with root privileges, it loads a kernel module that hooks 15+ kernel functions via the Linux ftrace framework — a legitimate kernel tracing mechanism repurposed for interception. No kernel patching, no DKMS registration, no suspicious entries in `lsmod` or `/sys/module`. The module compiles on-target against the machine's exact kernel headers, ensuring compatibility and leaving no pre-compiled binary signatures.
+The rootkit binary masquerades as a legitimate system component, blending into the noise of hundreds of similar processes on a typical Linux box. Once executed with appropriate privileges, it loads a kernel module that hooks multiple kernel functions via the Linux ftrace framework — a legitimate kernel tracing mechanism repurposed for interception. No kernel patching, no DKMS registration. The module compiles on-target against the machine's exact kernel headers, ensuring compatibility and leaving no pre-compiled binary signatures.
 
-Command-and-control runs over **DNS-over-HTTPS** (DoH). The rootkit polls Cloudflare's `1.1.1.1` DoH resolver over TLS port 443 — indistinguishable from normal HTTPS traffic. Commands are split across DNS MX records on a controller-managed domain, hex-encoded with an end-marker label to signal command completion. There are no listening ports, no custom TCP protocols, no direct operator-to-target connections. Every packet looks like a routine HTTPS request to Cloudflare DNS. Between polling cycles, the rootkit generates zero network traffic except a single-packet TCP connectivity check — complete radio silence.
+**Command-and-control runs over DNS-over-HTTPS (DoH).** The rootkit polls a public DoH resolver over TLS port 443 — indistinguishable from normal HTTPS traffic. Commands are hex-encoded and split across DNS MX records on a controller-managed domain, with an end-marker label to signal command completion. There are no listening ports, no custom protocols, no direct operator-to-target connections. Every packet looks like a routine HTTPS DNS query. Between polling cycles, the rootkit generates zero network traffic — complete radio silence.
 
-**What can it do?** The rootkit provides a full one-way shell. Any command sent via the C2 channel is executed via `/bin/sh -c` as a detached daemon process. Built-in `cd` and `pwd` provide directory navigation. Commands execute in 30-second timeout windows with output truncated for efficiency.
+Both the **deployment binary** and the **rootkit binary** are fully statically linked — zero runtime dependencies. The entire deployment runs on a bare Linux install with nothing installed beyond what ships with the kernel.
 
-**How does it stay hidden?** Every installed artifact is machine-specific. No two infected machines share the same binary name, module path, persistence entry, or config directory. File timestamps are cloned from legitimate system files to resist forensic timeline analysis. The kernel module auto-hides all rootkit paths on every boot and whitelists its own PID so the rootkit can operate while remaining invisible to `find`, `ls`, `ps`, `top`, `stat`, `kill`, and any EDR scanning `/proc`. Rootkit detection tools — including **chkrootkit**, **rkhunter**, and **unhide** — return clean results with zero warnings. Full merged-usr support ensures paths are correctly hidden whether `/lib` is a symlink to `/usr/lib` or not.
+**How does it stay hidden?** Every installed artifact is machine-specific. No two infected machines share the same binary name, module path, persistence entry, or config directory. File timestamps are cloned from legitimate system files to resist forensic timeline analysis. The kernel module auto-hides all rootkit paths on every boot and whitelists its own PID so the rootkit can function while remaining invisible to standard system tools and any EDR scanning `/proc`. Multiple rootkit detection tools return clean results.
 
-**Persistence** is handled through a hidden `@reboot` cron entry that sources the user's shell profiles so environment variables propagate correctly. The dropper binary is a single **fully static** ELF — zero runtime dependencies, no package manager noise beyond optional kernel header installation. Between the machine-specific naming, timestamp cloning, and per-build XOR encryption of embedded payloads, static analysis of the dropper yields nothing actionable.
+**Persistence** is handled through a hidden system scheduler entry that sources shell profiles. The deployment binary is a single statically-linked ELF with encrypted payloads — no dependencies, no package manager noise. Between machine-specific naming, timestamp cloning, and per-build encryption, static analysis of the deployment binary yields nothing actionable.
 
 ---
 
 ## Architecture
-
 ```mermaid
 flowchart TB
     Operator["🖥️  Operator"]
-    CTRL["Controller (Python)"]
-    DROP["Dropper (static ELF)"]
-    DOH["Cloudflare DoH<br/>1.1.1.1:443"]
-    CFAPI["Cloudflare API<br/>MX Record Management"]
-    DOMAIN["C2 Domain<br/>0x2.dpdns.org"]
+    CTRL["Controller"]
+    DROP["Deployment Binary<br/>(static ELF)"]
+
+    INFRA["☁️  Public Infrastructure"]
+    C2["Encrypted C2 Channel"]
+    API["Management API"]
 
     Target["Target Machine"]
-    IMP["Implant Binary<br/>systemd-coredump-*"]
-    KO["Kernel Module (.ko)<br/>sysmod_core_*"]
-    CRON["Boot Persistence<br/>@reboot cron"]
-    BEACON["Randomized Beacon<br/>10-30s + jitter"]
 
-    FS["File Hiding<br/>open/stat/lstat/statx/getdents64"]
-    PROC["Process Hiding<br/>kill/ptrace/getpriority"]
-    NLINK["nlink Deception<br/>stat/lstat/newfstatat"]
-    MOD["Module Hiding<br/>lsmod /proc/modules"]
-    KALL["Kallsyms Suppression"]
-    SD["Self-Defense<br/>finit_module pass-through"]
+    IMP["rootkit Binary"]
+    KO["Kernel Module"]
+    PERSIST["Boot Persistence"]
+    BEACON["Randomized Beacon<br/>with jitter"]
 
-    CHKPROC["chkproc bypassed"]
-    CHKDIRS["chkdirs bypassed"]
-    RKHUNT["rkhunter clean"]
-    UNHIDE["unhide clean"]
+    FS["File Hiding"]
+    PROC["Process Hiding"]
+    DEFENSE["Self-Defense"]
 
-    Hooks["Kernel Hooks — 15+ ftrace targets"]
-    Evasion["Anti-Rootkit Evasion"]
+    EVASION["Anti-Rootkit Evasion"]
 
     %% Operator flows
-    CTRL -->|build static dropper| DROP
-    DROP -->|deploy artifacts| Target
-    CTRL -->|upload MX records| CFAPI
-    CFAPI -->|publish records| DOMAIN
+    CTRL -->|build| DROP
+    DROP -->|deploy| Target
+    CTRL -->|send command| API
+    API --> INFRA
 
     %% C2 flows
+    IMP -->|poll| C2
+    C2 --> INFRA
     IMP -->|sleep| BEACON
-    BEACON -->|wake + poll| IMP
-    IMP -->|DoH query| DOH
-    DOH -->|MX response| IMP
-    DOH -->|DNS resolution| DOMAIN
+    BEACON -->|wake & poll| IMP
 
     %% Target internal
+    PERSIST -->|auto-start| IMP
     IMP -->|load| KO
-    CRON -->|auto-start on boot| IMP
 
     %% Hooks
-    KO -->|hooks| Hooks
-    Hooks --> FS
-    Hooks --> PROC
-    Hooks --> NLINK
-    Hooks --> MOD
-    Hooks --> KALL
-    Hooks --> SD
+    KO -->|hooks| FS
+    KO -->|hooks| PROC
+    KO -->|hooks| DEFENSE
 
-    %% Hook effects
-    FS -->|hide files| Target
-    PROC -->|hide PIDs| Target
-    NLINK -->|evade detection| Target
-    MOD -->|hide from lsmod| Target
-    KALL -->|zero entries| Target
-    SD -->|allow modprobe| Target
-
-    %% Evasion
-    Hooks -->|defeats| Evasion
-    Evasion --> CHKPROC
-    Evasion --> CHKDIRS
-    Evasion --> RKHUNT
-    Evasion --> UNHIDE
+    %% Effects
+    FS --> Target
+    PROC --> Target
+    DEFENSE --> Target
+    FS --> EVASION
+    PROC --> EVASION
+    DEFENSE --> EVASION
 ```
 
 ---
@@ -106,107 +85,63 @@ flowchart TB
 ### C2 Commands
 | Command | Description |
 |---|---|
-| Any shell command | Executed via `/bin/sh -c` with 30s timeout |
+| Any shell command | One-way shell — receive and execute |
 
 ### C2 Protocol
-- **Transport** — DNS-over-HTTPS (RFC 8484) to Cloudflare `1.1.1.1:443`
-- **Encoding** — plaintext command → hex-encoded → split across MX record labels (60-char max per label, 255-char max hostname)
-- **End marker** — final MX record carries a distinguishable label before the domain; rootkit stops fetching immediately without probing for "does N+1 exist?"
-- **Single TLS connection** — all MX queries per polling cycle sent over one TLS session, not one-per-query
-- **IPv4 only** — no IPv6 footprint, reduced attack surface
-- **Randomized polling** — configurable min/max interval (10–30s default) + 0–999ms jitter per cycle
+- **DNS-over-HTTPS (DoH)** — All C2 traffic over TLS port 443, indistinguishable from normal HTTPS
+- **MX record encoding** — Commands are hex-encoded and distributed across DNS MX records
+- **End marker** — Each command terminates with a configurable marker so the rootkit knows exactly when a command is complete — no wasted fetch cycles
+- **No listening ports** — Pure outbound HTTPS, nothing inbound
+- **Network profile** — Indistinguishable from a system performing DoH DNS resolution
 
-### Stealth
-| Layer | Hooks | Effect |
-|---|---|---|
-| **File hiding** | `open`, `stat`, `lstat`, `statx`, `access`, `openat`, `getdents64`, `chdir`, `chmod`, `chown`, `newfstatat` | All rootkit files invisible to `ls`, `find`, `stat` |
-| **Process hiding** | `kill`, `ptrace`, `getpriority`, `getdents64` | Rootkit PID hidden from `ps`, `/proc`, `kill -0`, `pgrep` |
-| **Module hiding** | `hide_module` (list manipulation) | Module invisible to `lsmod`, `/proc/modules`, `/sys/module` |
-| **nlink deception** | `stat`, `lstat`, `newfstatat` | Directory link counts post-corrected to defeat enumeration |
-| **Kallsyms suppression** | `num_symtab` zeroed | Zero module entries in `/proc/kallsyms` |
-| **dmesg sanitization** | All `printk` stripped | No references in `dmesg` output |
-| **Merged-usr** | Auto `/usr` prefix mirroring | Hiding `/bin/x` also hides `/usr/bin/x` and vice versa |
-| **Anti-debug** | `ptrace` hook | Debugger attachment blocked on rootkit process |
-| **finit_module** | Pass-through hook | Legitimate `modprobe`/`insmod` operations work normally |
+### Stealth — Syscall Hooking
+Multiple syscalls intercepted via ftrace before they reach userspace, covering:
+- **File access** — Blocked for hidden paths
+- **File metadata** — Returns errors for hidden paths; post-corrected to defeat enumeration
+- **Directory listings** — Filtered to exclude hidden entries
+- **Process inspection** — Debugger attachment, PID existence checks, and enumeration blocked for rootkit process
+- **Module loading** — Pass-through — legitimate kernel modules load normally
+
+### Stealth — Self-Defense
+- **Introspection blocking** — Module invisible to kernel symbol enumeration and module discovery
+- **Symbol suppression** — Module symbols hidden from kernel symbol table
+- **Log sanitization** — All kernel log output stripped from module
+- **PID hiding** — rootkit PID hidden from process listings, `/proc` traversal, and signal checks
+- **Path normalization** — All hidden paths registered for both traditional and merged filesystem layouts
+- **Module retry** — Auto-retries kernel module load if initial attempt fails
+- **Auto-load on boot** — Module compiles and loads automatically on startup
+- **Kernel upgrade resilience** — Module source persisted to hidden directory; auto-detects kernel version changes and recompiles on-the-fly
+- **Secret unload** — Control interface requires machine-specific key to unload
 
 ### Anti-Rootkit Evasion
-NEPHILM bypasses all major Linux rootkit detection tools including **chkrootkit** (chkproc, chkdirs), **rkhunter**, and **unhide** (proc, brute). All return clean results with zero warnings or detections.
-
-### Self-Defense
-- **Secret unload** — `/proc/sysmod_ctl_*` requires machine-specific key to unload module
-- **Module retry** — auto-retries kernel module load every 30 seconds if initial attempt fails
-- **Kernel upgrade resilience** — module source tarball persisted to hidden directory; implant auto-detects kernel version changes and recompiles on-the-fly
+NEPHILM bypasses all major Linux rootkit detection tools including **chkrootkit** (chkproc, chkdirs), **rkhunter**, and **unhide** (proc, brute). Both `chkrootkit` and `rkhunter` return clean results with no warnings or detections.
 
 ### Beaconing
-- **Randomized intervals** — polls DoH at random intervals between configurable min/max values
-- **Millisecond jitter** — 0–999ms random jitter added to each poll cycle to prevent timing analysis
-- **Zero traffic between polls** — complete network silence during sleep, single-packet connectivity check
-- **Configurable per build** — min/max values set in controller, baked into binary at compile time
-- **Network profile** — bursts of HTTPS to `1.1.1.1:443` at irregular intervals, identical to browser DNS-over-HTTPS traffic
+- **Randomized intervals** — Polls at random intervals between configurable min/max values
+- **Jitter** — Additional random sub-second delay per cycle to defeat timing analysis
+- **Configurable per rootkit** — Each infected machine can have different beacon timing
+- **Zero traffic between polls** — Complete network silence during sleep cycles
 
 ### Anti-Forensics
-- **Machine-specific naming** — every artifact name is unique per host, derived from `/etc/machine-id` via FNV-1a hash
-- **Merged-usr support** — paths auto-registered for both `/lib/`/`/bin/` and `/usr/lib/`/`/usr/bin/` variants
-- **Timestamp spoofing** — rootkit files cloned from legitimate system file timestamps (`/bin/ls`, `/etc/systemd/system.conf`)
-- **Per-build payload encryption** — rootkit binary XOR-encrypted with random 32-byte key before embedding in dropper; kernel module tarball encrypted with separate fixed key
-- **Static dropper** — single ELF binary, zero `.so` dependencies, runs on any x86_64 Linux
+- **Machine-specific naming** — Every artifact name is unique per host, derived from system identifiers
+- **Timestamp spoofing** — rootkit files cloned from legitimate system file timestamps
+- **Encrypted payloads** — rootkit binary encrypted (per-build key), module source encrypted
+- **Binary obfuscation** — Header corruption, string obfuscation at rest
+- **Build artifact cleanup** — All intermediate build files deleted after compilation
 
 ### Build-Time Diversity
-Every build and deployment produces unique binary artifacts.
+Every build produces unique binary artifacts — no two deployments share the same hash.
 
-| Layer | Mechanism |
-|---|---|
-| Rootkit binary encryption | 32-byte random XOR key per build |
-| Kernel module encryption | Hardcoded 32-byte XOR key for tarball |
-| Dead-code injection | 2–3 unique static functions with randomized names injected per machine |
-| Compiler flag jitter | Random optimization level + alignment flags |
-| ELF section mutation | Random `.comment` section with per-machine ID |
-| Build path randomization | Randomized `TMPDIR` prevents reproducible paths |
+| Layer | Scope | Mechanism |
+|---|---|---|
+| Dead-code injection | Per-machine | Unique static functions with randomized names injected into module sources |
+| Encryption keys | Per-build | rootkit binary encryption key randomized every controller build |
+| Compiler variation | Per-machine | Randomized optimization level plus random alignment flags |
+| Binary mutation | Per-machine | Random section appended to compiled module with per-machine ID |
+| Build path variation | Per-machine | Randomized temporary paths prevent reproducible builds |
 
-**Result:** Every controller build produces a unique dropper. Every machine deployment produces a unique kernel module. No two artifacts share a hash.
-
----
-
-## Deployment
-
-```bash
-# 1. Build everything from the controller
-python3 controller.py
-# → [2] Build static dropper
-# → Set poll intervals (or press Enter for defaults)
-# → Output: ./dropper (static, ~10 MB)
-
-# 2. Deploy to target
-scp dropper root@target:/tmp/
-ssh root@target
-sudo /tmp/dropper
-
-# 3. Send commands from controller
-python3 controller.py
-# → [1] Send command to target
-# → Enter shell command
-```
-
-### Controller Menu
-```
-❱ [1] Send command to target        — upload to Cloudflare MX records
-❱ [2] Build static dropper          — compile rootkit + package module
-```
-
-### Configurable (controller.py)
-```python
-C2_DOMAIN   = "0x2.dpdns.org"   # your DNS C2 domain
-POLL_MIN    = 10                # min seconds between polls
-POLL_MAX    = 30                # max seconds between polls
-END_MARKER  = "eeee"            # terminator marker in MX labels
-```
-
-### Utility Scripts
-| Script | Purpose |
-|---|---|
-| `remover.sh` | Full cleanup: kill process, unload module, remove all files |
-| `stealth_check.sh <pid>` | Verify all hiding layers are active |
-| `dns_rootkit.cpp` | Standalone DoH C2 client (no kernel module, for testing) |
+### Fully Static Binaries
+Both the deployment binary and the rootkit binary are fully statically linked — zero runtime dependencies. Deploy on any Linux x86_64 system with nothing installed beyond what ships with the kernel.
 
 ---
 
@@ -218,31 +153,14 @@ END_MARKER  = "eeee"            # terminator marker in MX labels
 - Kernel headers installed (`linux-headers-$(uname -r)`) — auto-installed by dropper if missing
 
 ### Controller
-- Python 3.8+
+- Python 3.13+
 - Cloudflare account with API token (DNS edit permissions)
 - Domain managed by Cloudflare
-- `g++` with static linking support
-- `cmake`
-
-### Build Dependencies
-- OpenSSL development headers (`libssl-dev`)
-- Standard build tools (`make`, `tar`)
-
-
----
-## Build
-
-### Prerequisites
 - `g++` (C++17)
 - `cmake` (3.14+)
-- `libssl-dev`, `zlib1g-dev`
 - `upx` (optional, for dropper compression)
-- Linux kernel headers (for kernel module compilation on target)
-
-**Supported Targets**
-
-  * Architecture    :  x86_64 only
-  * Linux Kernel    :  4.17.x – 6.x
+- OpenSSL development headers (`libssl-dev`)
+- Standard build tools (`make`, `tar`)
 
 ### INSTALLATION
     git clone https://github.com/0xbitx/DEDSEC_NEPHILM.git
