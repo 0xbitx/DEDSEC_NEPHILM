@@ -4,7 +4,7 @@
 </p>
 
 <h1 align="center">NEPHILM</h1>
-<h4 align="center">Kernel-level rootkit for modern Linux — ftrace-based syscall hooking, DNS-based C2 over DoH (DNS-over-HTTPS), one-way shell, machine-specific artifact naming, randomized beaconing with jitter, and fully static deployment.</h4>
+<p align="center"><code>Kernel-level rootkit for modern Linux — ftrace-based syscall hooking, DNS-based C2 over DoH (DNS-over-HTTPS), one-way shell, fully static deployment.</code></p>
 
 ---
 
