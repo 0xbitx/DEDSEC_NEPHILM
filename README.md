@@ -1197,7 +1197,7 @@ End Date:   2026:06:16 13:57:16
 ## Requirements
 
 ### Target Machine
-- Linux kernel 4.17–6.x (x86_64)
+- Linux kernel 4.17–7.x (x86_64)
 - Root access
 - Kernel headers installed (`linux-headers-$(uname -r)`) — auto-installed by dropper if missing
 
